@@ -24,6 +24,8 @@ public class InternalController {
             "违约金", "单方解除", "单方面解除", "预付款", "尾款", "验收", "发票", "税率",
             "个人信息", "保密", "数据出境", "境外", "跨境", "管辖", "仲裁", "诉讼");
 
+    private static final int MAX_SEARCH_LIMIT = 20;
+
     private final DocumentRepository documentRepository;
     private final DocumentBlockRepository blockRepository;
     private final ReviewTaskService taskService;
@@ -41,8 +43,8 @@ public class InternalController {
                                        @RequestParam(defaultValue = "") String q,
                                        @RequestParam(defaultValue = "8") int limit) {
         documentRepository.findById(docId)
-                .orElseThrow(() -> new IllegalArgumentException("文档不存在: " + docId));
-        int size = Math.max(1, Math.min(limit, 20));
+                .orElseThrow(() -> new NotFoundException("文档不存在: " + docId));
+        int size = Math.max(1, Math.min(limit, MAX_SEARCH_LIMIT));
         return blockRepository.findByDocIdOrderBySeqAsc(docId).stream()
                 .filter(block -> !"HEADING".equals(block.getType()))
                 .map(block -> new ScoredBlock(block, score(block.getText(), q)))
@@ -57,7 +59,7 @@ public class InternalController {
     @GetMapping("/docs/{docId}/blocks/{blockId}")
     public BlockDto getBlock(@PathVariable String docId, @PathVariable String blockId) {
         DocumentBlock block = blockRepository.findById(blockId)
-                .orElseThrow(() -> new IllegalArgumentException("文档片段不存在: " + blockId));
+                .orElseThrow(() -> new NotFoundException("文档片段不存在: " + blockId));
         if (!docId.equals(block.getDocId())) {
             throw new IllegalArgumentException("文档片段不属于当前文档");
         }

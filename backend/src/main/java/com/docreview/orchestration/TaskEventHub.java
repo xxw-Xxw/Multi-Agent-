@@ -1,5 +1,6 @@
 package com.docreview.orchestration;
 
+import com.docreview.config.AppProperties;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -16,12 +17,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @Component
 public class TaskEventHub {
 
-    private static final long TIMEOUT_MS = 30 * 60 * 1000L;
-
     private final Map<String, CopyOnWriteArrayList<SseEmitter>> emitters = new ConcurrentHashMap<>();
+    private final long timeoutMs;
+
+    public TaskEventHub(AppProperties props) {
+        this.timeoutMs = Math.max(1, props.getSse().getTaskTimeoutMinutes()) * 60_000L;
+    }
 
     public SseEmitter subscribe(String taskId) {
-        SseEmitter emitter = new SseEmitter(TIMEOUT_MS);
+        SseEmitter emitter = new SseEmitter(timeoutMs);
         emitters.computeIfAbsent(taskId, key -> new CopyOnWriteArrayList<>()).add(emitter);
         emitter.onCompletion(() -> remove(taskId, emitter));
         emitter.onTimeout(() -> remove(taskId, emitter));

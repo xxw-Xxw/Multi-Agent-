@@ -10,17 +10,24 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class WebConfig implements WebMvcConfigurer {
 
     private final AuthInterceptor authInterceptor;
+    private final AppProperties props;
 
-    public WebConfig(AuthInterceptor authInterceptor) {
+    public WebConfig(AuthInterceptor authInterceptor, AppProperties props) {
         this.authInterceptor = authInterceptor;
+        this.props = props;
     }
 
+    /** 允许来源通过 app.cors.allowed-origins 配置；Cookie 鉴权需要 allowCredentials。 */
     @Override
     public void addCorsMappings(CorsRegistry registry) {
+        if (props.getCors().getAllowedOrigins().isEmpty()) {
+            return;
+        }
         registry.addMapping("/api/**")
-                .allowedOrigins("http://localhost:5173", "http://127.0.0.1:5173")
+                .allowedOrigins(props.getCors().getAllowedOrigins().toArray(String[]::new))
                 .allowedMethods("GET", "POST", "PATCH", "DELETE", "OPTIONS")
-                .allowedHeaders("*");
+                .allowedHeaders("*")
+                .allowCredentials(true);
     }
 
     /** 除注册登录外的 /api/** 全部要求有效 JWT。 */

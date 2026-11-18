@@ -1,5 +1,7 @@
 package com.docreview.service;
 
+import com.docreview.config.AppProperties;
+import com.docreview.domain.HumanStatus;
 import com.docreview.domain.TaskStatus;
 import com.docreview.domain.entity.AgentRun;
 import com.docreview.domain.entity.ChatSession;
@@ -16,12 +18,15 @@ import com.docreview.repository.DocumentRepository;
 import com.docreview.repository.FindingRepository;
 import com.docreview.repository.ReviewReportRepository;
 import com.docreview.repository.ReviewTaskRepository;
+import com.docreview.web.ForbiddenException;
+import com.docreview.web.NotFoundException;
 import com.docreview.web.dto.BlockDto;
 import com.docreview.web.dto.FindingDto;
 import com.docreview.web.dto.HistoryItemDto;
 import com.docreview.web.dto.ReportDto;
 import com.docreview.web.dto.TaskDto;
 import com.docreview.web.dto.TraceDto;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -44,6 +49,7 @@ public class ReviewTaskService {
     private final AgentRunRepository runRepository;
     private final ChatSessionRepository sessionRepository;
     private final ReviewOrchestrator orchestrator;
+    private final AppProperties props;
 
     public ReviewTaskService(ReviewTaskRepository taskRepository,
                              DocumentRepository documentRepository,
@@ -52,7 +58,8 @@ public class ReviewTaskService {
                              ReviewReportRepository reportRepository,
                              AgentRunRepository runRepository,
                              ChatSessionRepository sessionRepository,
-                             ReviewOrchestrator orchestrator) {
+                             ReviewOrchestrator orchestrator,
+                             AppProperties props) {
         this.taskRepository = taskRepository;
         this.documentRepository = documentRepository;
         this.blockRepository = blockRepository;
@@ -61,13 +68,14 @@ public class ReviewTaskService {
         this.runRepository = runRepository;
         this.sessionRepository = sessionRepository;
         this.orchestrator = orchestrator;
+        this.props = props;
     }
 
     public TaskDto create(String documentId, String userId) {
         DocumentEntity document = documentRepository.findById(documentId)
-                .orElseThrow(() -> new IllegalArgumentException("文档不存在: " + documentId));
+                .orElseThrow(() -> new NotFoundException("文档不存在: " + documentId));
         if (!userId.equals(document.getUserId())) {
-            throw new IllegalArgumentException("无权访问该文档: " + documentId);
+            throw new ForbiddenException("无权访问该文档: " + documentId);
         }
 
         ReviewTask task = new ReviewTask();
@@ -129,9 +137,11 @@ public class ReviewTaskService {
                 blocks);
     }
 
-    /** 历史审查记录：当前用户 review_task 最近 30 条，附带文档名、风险统计与会话。 */
+    /** 历史审查记录：当前用户最近 N 条（N 由 app.review.history-limit 配置）。 */
     public List<HistoryItemDto> history(String userId) {
-        List<ReviewTask> tasks = taskRepository.findTop30ByUserIdOrderByCreatedAtDesc(userId);
+        int limit = Math.max(1, props.getReview().getHistoryLimit());
+        List<ReviewTask> tasks = taskRepository
+                .findByUserIdOrderByCreatedAtDesc(userId, PageRequest.of(0, limit));
         if (tasks.isEmpty()) {
             return List.of();
         }
@@ -171,22 +181,31 @@ public class ReviewTaskService {
 
     public FindingDto updateHumanStatus(String findingId, String humanStatus, String userId) {
         Finding finding = findingRepository.findById(findingId)
-                .orElseThrow(() -> new IllegalArgumentException("结论不存在: " + findingId));
+                .orElseThrow(() -> new NotFoundException("结论不存在: " + findingId));
         requireTask(finding.getTaskId(), userId);
-        finding.setHumanStatus(com.docreview.domain.HumanStatus.valueOf(humanStatus.toUpperCase()));
+        if (humanStatus == null || humanStatus.isBlank()) {
+            throw new IllegalArgumentException("人工复核状态不能为空");
+        }
+        HumanStatus status;
+        try {
+            status = HumanStatus.valueOf(humanStatus.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("无效的人工复核状态: " + humanStatus);
+        }
+        finding.setHumanStatus(status);
         findingRepository.save(finding);
         return toFindingDto(finding);
     }
 
     private ReviewTask requireTask(String taskId) {
         return taskRepository.findById(taskId)
-                .orElseThrow(() -> new IllegalArgumentException("任务不存在: " + taskId));
+                .orElseThrow(() -> new NotFoundException("任务不存在: " + taskId));
     }
 
     private ReviewTask requireTask(String taskId, String userId) {
         ReviewTask task = requireTask(taskId);
         if (!userId.equals(task.getUserId())) {
-            throw new IllegalArgumentException("无权访问该任务: " + taskId);
+            throw new ForbiddenException("无权访问该任务: " + taskId);
         }
         return task;
     }

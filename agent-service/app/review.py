@@ -16,6 +16,19 @@ from .sse import error_event, sse_event
 DOMAINS = ["LEGAL", "FINANCE", "COMPLIANCE"]
 DOMAIN_NAMES = {"LEGAL": "法务", "FINANCE": "财务", "COMPLIANCE": "合规"}
 
+# 各阶段进度：100% 只能由 Java 在结果落库后发布
+PROGRESS_PLANNING = 18
+PROGRESS_REVIEWING = 20
+PROGRESS_REVIEWING_SPAN = 60
+PROGRESS_CRITIQUING = 82
+PROGRESS_ARBITRATING = 90
+PROGRESS_REPORTING = 96
+PROGRESS_SAVING = 98
+
+# Planner 只取文档开头做类型识别，避免把全文塞进提示词
+PLANNER_EXCERPT_BLOCKS = 20
+PLANNER_EXCERPT_CHARS = 6000
+
 
 class Segment(TypedDict):
     block: Block
@@ -135,7 +148,9 @@ async def planner_node(state: ReviewState) -> dict[str, Any]:
                 "你是 PLANNER 文档规划 Agent。根据文档名称与正文判断文档类型，只输出 JSON："
                 '{"docType":"采购合同|招标文件|管理制度|通用文档"}。'
             )
-            excerpt = "\n".join(block.text for block in request.blocks[:20])[:6000]
+            excerpt = "\n".join(
+                block.text for block in request.blocks[:PLANNER_EXCERPT_BLOCKS]
+            )[:PLANNER_EXCERPT_CHARS]
             data, _, tokens = await complete_json(
                 system,
                 f"文档名称：{request.documentName}\n正文摘录：\n{excerpt}",
@@ -531,7 +546,8 @@ async def review_event_stream(request: ReviewRequest):
     completed_experts = 0
     total_experts = 0
     try:
-        yield _stage(task_id, "PlannerAgent", "PLANNING", 18, "正在识别文档类型并规划专家分片。")
+        yield _stage(task_id, "PlannerAgent", "PLANNING", PROGRESS_PLANNING,
+                     "正在识别文档类型并规划专家分片。")
         initial: ReviewState = {"request": request}
         async for updates in get_review_graph().astream(initial, stream_mode="updates"):
             for node, update in updates.items():
@@ -547,7 +563,7 @@ async def review_event_stream(request: ReviewRequest):
                         task_id,
                         "ExpertAgent",
                         "REVIEWING",
-                        20,
+                        PROGRESS_REVIEWING,
                         f"规划完成，正在并行执行 {total_experts} 个专家分片任务。",
                         {
                             "docType": update.get("docType", "通用文档"),
@@ -557,7 +573,9 @@ async def review_event_stream(request: ReviewRequest):
                     )
                 elif node == "expert":
                     completed_experts += 1
-                    progress = 20 + int(60 * completed_experts / max(total_experts, 1))
+                    progress = PROGRESS_REVIEWING + int(
+                        PROGRESS_REVIEWING_SPAN * completed_experts / max(total_experts, 1)
+                    )
                     results = update.get("expert_results", [])
                     section_id = results[0]["sectionId"] if results else ""
                     yield _stage(
@@ -569,23 +587,27 @@ async def review_event_stream(request: ReviewRequest):
                         {"sectionId": section_id},
                     )
                     if completed_experts == total_experts:
-                        yield _stage(task_id, "CriticAgent", "CRITIQUING", 82, "正在逐字核验风险结论的原文证据。")
+                        yield _stage(task_id, "CriticAgent", "CRITIQUING", PROGRESS_CRITIQUING,
+                                     "正在逐字核验风险结论的原文证据。")
                 elif node == "empty_experts":
-                    yield _stage(task_id, "CriticAgent", "CRITIQUING", 82, "没有可审查正文，正在执行空结果校验。")
+                    yield _stage(task_id, "CriticAgent", "CRITIQUING", PROGRESS_CRITIQUING,
+                                 "没有可审查正文，正在执行空结果校验。")
                 elif node == "critic":
                     yield _stage(
                         task_id,
                         "ArbiterAgent",
                         "ARBITRATING",
-                        90,
+                        PROGRESS_ARBITRATING,
                         "证据校验完成，正在去重、处理等级冲突并汇总。",
                         {"dropped": update.get("dropped_count", 0)},
                     )
                 elif node == "arbiter":
-                    yield _stage(task_id, "ReporterAgent", "REPORTING", 96, "仲裁完成，正在生成审查报告。")
+                    yield _stage(task_id, "ReporterAgent", "REPORTING", PROGRESS_REPORTING,
+                                 "仲裁完成，正在生成审查报告。")
                 elif node == "reporter":
                     # 100% 只能由 Java 在结果落库后发布，避免前端提前读取报告。
-                    yield _stage(task_id, "ReporterAgent", "REPORTING", 98, "审查报告已生成，正在保存结果。")
+                    yield _stage(task_id, "ReporterAgent", "REPORTING", PROGRESS_SAVING,
+                                 "审查报告已生成，正在保存结果。")
                     yield sse_event(
                         "done",
                         {

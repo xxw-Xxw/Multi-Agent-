@@ -9,13 +9,13 @@ import java.util.concurrent.ThreadPoolExecutor;
 @Configuration
 public class AsyncConfig {
 
-    /** 审查任务的主执行器 */
+    /** 审查任务的主执行器，线程池参数由 app.executor.* 配置。 */
     @Bean("reviewExecutor")
-    public ThreadPoolTaskExecutor reviewExecutor() {
+    public ThreadPoolTaskExecutor reviewExecutor(AppProperties props) {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(4);
-        executor.setMaxPoolSize(8);
-        executor.setQueueCapacity(50);
+        executor.setCorePoolSize(props.getExecutor().getCorePoolSize());
+        executor.setMaxPoolSize(props.getExecutor().getMaxPoolSize());
+        executor.setQueueCapacity(props.getExecutor().getQueueCapacity());
         executor.setThreadNamePrefix("review-task-");
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         executor.initialize();

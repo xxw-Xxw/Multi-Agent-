@@ -3,12 +3,15 @@ package com.docreview.security;
 import com.docreview.config.AppProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -24,17 +27,40 @@ public class JwtService {
     private static final Base64.Decoder DECODER = Base64.getUrlDecoder();
     private static final String HEADER = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
 
+    private static final Logger log = LoggerFactory.getLogger(JwtService.class);
+    private static final int MIN_SECRET_BYTES = 16;
+
     private final byte[] secret;
     private final long ttlMillis;
     private final ObjectMapper mapper;
 
     public JwtService(AppProperties props, ObjectMapper mapper) {
-        this.secret = props.getAuth().getSecret().getBytes(StandardCharsets.UTF_8);
-        if (secret.length < 16) {
-            throw new IllegalStateException("app.auth.secret 至少需要 16 字节");
-        }
+        String configured = props.getAuth().getSecret();
+        this.secret = resolveSecret(configured);
         this.ttlMillis = Math.max(1, props.getAuth().getTtlHours()) * 3_600_000L;
         this.mapper = mapper;
+    }
+
+    /**
+     * 不内置演示密钥：未配置时随机生成，保证默认部署也无法被伪造 token。
+     * 代价是重启后已签发的 token 全部失效，生产环境应显式配置 APP_AUTH_SECRET。
+     */
+    private byte[] resolveSecret(String configured) {
+        if (configured == null || configured.isBlank()) {
+            byte[] generated = new byte[32];
+            new SecureRandom().nextBytes(generated);
+            log.warn("未配置 APP_AUTH_SECRET，已生成临时签名密钥；重启后现有 token 会失效");
+            return generated;
+        }
+        byte[] bytes = configured.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length < MIN_SECRET_BYTES) {
+            throw new IllegalStateException("app.auth.secret 至少需要 " + MIN_SECRET_BYTES + " 字节");
+        }
+        return bytes;
+    }
+
+    public long ttlMillis() {
+        return ttlMillis;
     }
 
     public String issue(String userId, String username) {

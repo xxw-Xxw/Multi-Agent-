@@ -44,9 +44,9 @@ def get_settings() -> Settings:
         provider = "mock"
     api_key = os.getenv("APP_LLM_API_KEY", "").strip() or None
     try:
-        timeout = float(os.getenv("APP_LLM_TIMEOUT_SECONDS", "120"))
+        timeout = float(os.getenv("APP_LLM_TIMEOUT_SECONDS", "180"))
     except ValueError:
-        timeout = 120.0
+        timeout = 180.0
     return Settings(
         provider=provider,
         base_url=os.getenv("APP_LLM_BASE_URL", "https://api.deepseek.com").rstrip("/"),

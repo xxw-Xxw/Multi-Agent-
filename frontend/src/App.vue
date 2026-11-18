@@ -14,9 +14,11 @@ import {
   sendMessage,
   login,
   register,
+  logout as logoutApi,
   setAuth,
   clearAuth,
   getCurrentUser,
+  getAllowedTypes,
   onUnauthorized
 } from './api'
 
@@ -56,11 +58,26 @@ const authMode = ref('login')
 const authForm = ref({ username: '', password: '', displayName: '' })
 const authError = ref('')
 const authBusy = ref(false)
+const allowedTypes = ref([])
 let source = null
 
+const allowedAccept = computed(() => allowedTypes.value.map((type) => `.${type}`).join(','))
+const allowedTypeLabel = computed(() => allowedTypes.value.map((type) => type.toUpperCase()).join(' / '))
+
 onMounted(() => {
-  if (currentUser.value) loadHistory()
+  if (currentUser.value) {
+    loadHistory()
+    loadAllowedTypes()
+  }
 })
+
+async function loadAllowedTypes() {
+  try {
+    allowedTypes.value = await getAllowedTypes()
+  } catch (e) {
+    // 类型清单只影响选择框过滤，失败时不阻塞主流程。
+  }
+}
 
 // 任意请求返回 401：清空登录态，回到登录页。
 onUnauthorized((message) => {
@@ -96,10 +113,11 @@ async function submitAuth() {
     const result = authMode.value === 'login'
       ? await login(username, password)
       : await register(username, password, authForm.value.displayName)
-    setAuth(result.token, result.user)
+    setAuth(result.user)
     currentUser.value = result.user
     authForm.value = { username: '', password: '', displayName: '' }
     await loadHistory()
+    await loadAllowedTypes()
   } catch (e) {
     authError.value = e.message
   } finally {
@@ -107,12 +125,18 @@ async function submitAuth() {
   }
 }
 
-function logout() {
+async function logout() {
   closeSource()
+  try {
+    await logoutApi()
+  } catch (e) {
+    // 即使服务端不可达，也要在本地退出。
+  }
   clearAuth()
   currentUser.value = null
   authMode.value = 'login'
   authError.value = ''
+  allowedTypes.value = []
   resetLocalState()
 }
 
@@ -131,8 +155,22 @@ const activeFinding = computed(() => {
 const expandedRun = computed(() => trace.value.find((r) => r.id === expandedRunId.value) || null)
 
 function onFileChange(event) {
-  files.value = event.target.files ? Array.from(event.target.files) : []
-  error.value = ''
+  const selected = event.target.files ? Array.from(event.target.files) : []
+  if (!allowedTypes.value.length) {
+    files.value = selected
+    error.value = ''
+    return
+  }
+  const accepted = selected.filter((file) => allowedTypes.value.includes(extensionOf(file.name)))
+  files.value = accepted
+  error.value = accepted.length < selected.length
+    ? `已忽略不支持的文件，当前仅支持 ${allowedTypeLabel.value}`
+    : ''
+}
+
+function extensionOf(name) {
+  const index = name.lastIndexOf('.')
+  return index >= 0 ? name.slice(index + 1).toLowerCase() : ''
 }
 
 function removeFile(index) {
@@ -141,7 +179,7 @@ function removeFile(index) {
 
 async function start() {
   if (!files.value.length) {
-    error.value = '请先选择至少一份 pdf / docx / txt 文档'
+    error.value = `请先选择至少一份 ${allowedTypeLabel.value} 文档`
     return
   }
   busy.value = true
@@ -491,7 +529,7 @@ function statusText(status) {
           <input
             v-model="authForm.password"
             type="password"
-            :placeholder="authMode === 'login' ? '请输入密码' : '至少 6 位'"
+            :placeholder="authMode === 'login' ? '请输入密码' : '至少 8 位'"
             :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'"
             @keydown.enter.prevent="submitAuth"
           />
@@ -508,7 +546,7 @@ function statusText(status) {
 
     <section v-if="phase === 'upload'" class="card">
       <div class="upload-row">
-        <input class="file-input" type="file" accept=".pdf,.docx,.txt" multiple @change="onFileChange" />
+        <input class="file-input" type="file" :accept="allowedAccept" multiple @change="onFileChange" />
         <button class="primary" :disabled="busy || !files.length" @click="start">
           {{ busy ? `审查中 ${batchIndex}/${batchTotal}…` : files.length > 1 ? `开始审查（${files.length} 个文件）` : '开始审查' }}
         </button>
@@ -521,7 +559,7 @@ function statusText(status) {
         </div>
       </div>
       <div class="hint">
-        支持一次选择多个 PDF / DOCX / TXT，按顺序逐个审查，每个文件生成一条独立记录。推理由 Python LangGraph 服务执行，默认使用离线规则；真实 DeepSeek 模型通过 agent-service 环境变量启用。
+        支持一次选择多个 {{ allowedTypeLabel }} 文件，按顺序逐个审查，每个文件生成一条独立记录。推理由 Python LangGraph 服务执行，默认使用离线规则；真实 DeepSeek 模型通过 agent-service 环境变量启用。
       </div>
       <div v-if="error" class="error">{{ error }}</div>
     </section>

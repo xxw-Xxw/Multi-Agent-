@@ -1,6 +1,7 @@
 package com.docreview.service;
 
 import com.docreview.config.AppProperties;
+import com.docreview.domain.TaskStatus;
 import com.docreview.domain.entity.ChatMessage;
 import com.docreview.domain.entity.ChatSession;
 import com.docreview.domain.entity.DocumentBlock;
@@ -12,6 +13,8 @@ import com.docreview.repository.ChatSessionRepository;
 import com.docreview.repository.DocumentBlockRepository;
 import com.docreview.repository.DocumentRepository;
 import com.docreview.repository.ReviewTaskRepository;
+import com.docreview.web.ForbiddenException;
+import com.docreview.web.NotFoundException;
 import com.docreview.web.dto.ChatMessageDto;
 import com.docreview.web.dto.CitationDto;
 import com.docreview.web.dto.SessionDto;
@@ -36,8 +39,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** 会话状态存 Java；每个上游 SSE 事件立即转发，不缓冲完整回答。 */
 @Service
 public class ChatService {
-
-    private static final long STREAM_TIMEOUT_MS = 180_000;
 
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
@@ -68,19 +69,19 @@ public class ChatService {
 
     public SessionDto create(String documentId, String taskId, String userId) {
         DocumentEntity document = documentRepository.findById(documentId)
-                .orElseThrow(() -> new IllegalArgumentException("文档不存在: " + documentId));
+                .orElseThrow(() -> new NotFoundException("文档不存在: " + documentId));
         if (!userId.equals(document.getUserId())) {
-            throw new IllegalArgumentException("无权访问该文档: " + documentId);
+            throw new ForbiddenException("无权访问该文档: " + documentId);
         }
         if (taskId == null || taskId.isBlank()) {
             throw new IllegalArgumentException("创建问答会话需要审查任务 ID");
         }
         ReviewTask task = taskRepository.findById(taskId)
-                .orElseThrow(() -> new IllegalArgumentException("任务不存在: " + taskId));
+                .orElseThrow(() -> new NotFoundException("任务不存在: " + taskId));
         if (!documentId.equals(task.getDocumentId()) || !userId.equals(task.getUserId())) {
-            throw new IllegalArgumentException("任务不属于当前文档");
+            throw new ForbiddenException("任务不属于当前文档");
         }
-        if (!task.getStatus().finished() || task.getStatus().name().equals("FAILED")) {
+        if (!task.getStatus().finished() || task.getStatus() == TaskStatus.FAILED) {
             throw new IllegalArgumentException("审查完成后才能发起文档问答");
         }
 
@@ -114,7 +115,8 @@ public class ChatService {
         }
         ChatSession session = requireSession(sessionId, userId);
         List<ChatMessage> previous = messageRepository.findBySessionIdOrderByCreatedAtAscIdAsc(sessionId);
-        int from = Math.max(0, previous.size() - 12);
+        int historyLimit = Math.max(1, props.getChat().getHistoryLimit());
+        int from = Math.max(0, previous.size() - historyLimit);
         List<Map<String, String>> history = new ArrayList<>();
         for (ChatMessage message : previous.subList(from, previous.size())) {
             if (message.getContent() != null && !message.getContent().isBlank()
@@ -136,7 +138,8 @@ public class ChatService {
         request.put("history", history);
         request.put("javaBaseUrl", props.getAgent().getJavaBaseUrl());
 
-        SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MS);
+        long timeoutMs = Math.max(1, props.getAgent().getTimeoutSeconds()) * 1000L;
+        SseEmitter emitter = new SseEmitter(timeoutMs);
         StringBuilder answer = new StringBuilder();
         AtomicBoolean finished = new AtomicBoolean();
         send(emitter, "start", Map.of("messageId", assistant.getId(), "userMessageId", user.getId()));
@@ -233,9 +236,9 @@ public class ChatService {
 
     private ChatSession requireSession(String sessionId, String userId) {
         ChatSession session = sessionRepository.findById(sessionId)
-                .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
+                .orElseThrow(() -> new NotFoundException("会话不存在: " + sessionId));
         if (!userId.equals(session.getUserId())) {
-            throw new IllegalArgumentException("无权访问该会话: " + sessionId);
+            throw new ForbiddenException("无权访问该会话: " + sessionId);
         }
         return session;
     }

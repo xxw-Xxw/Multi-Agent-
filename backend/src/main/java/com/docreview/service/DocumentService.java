@@ -3,6 +3,7 @@ package com.docreview.service;
 import com.docreview.config.AppProperties;
 import com.docreview.domain.entity.DocumentEntity;
 import com.docreview.repository.DocumentRepository;
+import com.docreview.web.NotFoundException;
 import com.docreview.web.dto.DocumentDto;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -20,6 +21,7 @@ import java.util.UUID;
 public class DocumentService {
 
     private static final Set<String> ALLOWED = Set.of("pdf", "docx", "txt");
+    private static final int HASH_BUFFER_BYTES = 8192;
 
     private final DocumentRepository repository;
     private final AppProperties props;
@@ -29,6 +31,11 @@ public class DocumentService {
         this.props = props;
     }
 
+    /** 支持的文件扩展名，供前端渲染 accept 与校验，避免前后端各维护一份。 */
+    public static Set<String> allowedExtensions() {
+        return ALLOWED;
+    }
+
     public DocumentDto upload(MultipartFile file, String userId) {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("请选择要上传的文件");
@@ -36,7 +43,12 @@ public class DocumentService {
         String originalName = file.getOriginalFilename() == null ? "未命名" : file.getOriginalFilename();
         String ext = extensionOf(originalName);
         if (!ALLOWED.contains(ext)) {
-            throw new IllegalArgumentException("暂只支持 pdf / docx / txt 文件");
+            throw new IllegalArgumentException("暂只支持 " + String.join(" / ", ALLOWED) + " 文件");
+        }
+        long used = repository.sumSizeByUserId(userId);
+        long limit = props.getStorage().getMaxUserBytes();
+        if (used + file.getSize() > limit) {
+            throw new IllegalArgumentException("上传空间不足：单用户上限 " + (limit / 1024 / 1024) + "MB");
         }
 
         String id = UUID.randomUUID().toString();
@@ -67,7 +79,7 @@ public class DocumentService {
 
     public DocumentEntity get(String id) {
         return repository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("文档不存在: " + id));
+                .orElseThrow(() -> new NotFoundException("文档不存在: " + id));
     }
 
     public DocumentDto toDto(DocumentEntity entity) {
@@ -83,7 +95,7 @@ public class DocumentService {
     private String sha256(File file) {
         try (var in = Files.newInputStream(file.toPath())) {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] buffer = new byte[8192];
+            byte[] buffer = new byte[HASH_BUFFER_BYTES];
             int read;
             while ((read = in.read(buffer)) > 0) {
                 digest.update(buffer, 0, read);
@@ -94,7 +106,7 @@ public class DocumentService {
             }
             return sb.toString();
         } catch (Exception e) {
-            return "";
+            throw new IllegalStateException("计算文件摘要失败: " + e.getMessage(), e);
         }
     }
 }

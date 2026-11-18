@@ -16,33 +16,14 @@ from .schemas import Block, ChatRequest, Citation, Finding, RiskLevel
 from .sse import error_event, sse_event
 
 MAX_TOOL_CALLS = 3
+SEARCH_LIMIT = 8
+EXCERPT_CHARS = 300
+HISTORY_MESSAGES = 8
+STREAM_CHUNK_CHARS = 12
+QUERY_MAX_CHARS = 80
+FOLLOW_UP_MAX_CHARS = 14
+MAX_CITATION_BLOCKS = 3
 logger = logging.getLogger(__name__)
-SEARCH_KEYWORDS = [
-    "单方面解除",
-    "单方解除",
-    "违约金",
-    "预付款",
-    "验收合格后",
-    "数据出境",
-    "跨境传输",
-    "管辖法院",
-    "仲裁委员会",
-    "个人信息",
-    "身份证",
-    "手机号",
-    "尾款",
-    "验收",
-    "发票",
-    "税率",
-    "保密",
-    "境外",
-    "诉讼",
-    "争议",
-    "付款",
-    "合同金额",
-    "解除",
-    "违约",
-]
 
 
 class ChatState(TypedDict, total=False):
@@ -89,31 +70,44 @@ def _requested_block_id(request: ChatRequest) -> str | None:
 def _is_follow_up(message: str) -> bool:
     """判断是否为承接上一轮的简短追问，例如「为什么」「依据是什么」「详细说说」。"""
     text = message.strip()
-    if len(text) > 14:
-        return False
-    if any(keyword in text for keyword in SEARCH_KEYWORDS):
+    if len(text) > FOLLOW_UP_MAX_CHARS:
         return False
     return any(
         word in text
-        for word in ["为什么", "依据", "理由", "原因", "详细", "展开", "继续说", "还有", "怎么改", "如何"]
+        for word in ["这条", "该条款", "上述", "刚才", "原文", "为什么", "依据", "理由", "原因", "详细", "展开", "继续说", "还有", "怎么改", "如何"]
     )
 
 
-def _search_query(request: ChatRequest) -> str:
-    source = request.message
-    for keyword in SEARCH_KEYWORDS:
-        if keyword in source:
-            return keyword
-    if any(word in source for word in ["原文", "上述", "这条", "这条款", "刚才"]) or _is_follow_up(source):
-        history_text = "\n".join(item.content for item in reversed(request.history))
-        for keyword in SEARCH_KEYWORDS:
-            if keyword in history_text:
-                return keyword
+QUERY_CUT_MARKERS = ["是怎么", "是什么", "是多少", "有什么", "有哪些", "怎么", "如何", "为什么", "是否", "能否", "多少"]
+
+
+def _clean_query(source: str) -> str:
+    """把自然语言问题压成检索短语，例如「违约金是怎么约定的」→「违约金」。"""
     cleaned = re.sub(r"\s+", " ", source).strip()
     for phrase in ["请帮我", "请", "查一下", "查询", "原文", "怎么说的", "怎么说", "是什么", "相关条款"]:
         cleaned = cleaned.replace(phrase, "")
-    cleaned = cleaned.strip(" ，。！？!?；;：:")
-    return (cleaned or source.strip())[:80]
+    for marker in QUERY_CUT_MARKERS:
+        index = cleaned.find(marker)
+        if index > 0:
+            cleaned = cleaned[:index]
+            break
+    return cleaned.strip(" ，。！？!?；;：:的")
+
+
+def _search_query(request: ChatRequest) -> str:
+    """检索词由当前问题决定；追问或指代上一轮时回退到最近一条用户消息。
+
+    领域关键词只保留在 Java 的检索打分里，避免两套词表各自漂移。
+    """
+    source = request.message.strip()
+    if not _is_follow_up(source):
+        cleaned = _clean_query(source)
+        if cleaned:
+            return cleaned[:QUERY_MAX_CHARS]
+    for item in reversed(request.history):
+        if item.role == "user" and item.content.strip():
+            return _clean_query(item.content)[:QUERY_MAX_CHARS] or item.content.strip()[:QUERY_MAX_CHARS]
+    return _clean_query(source)[:QUERY_MAX_CHARS] or source[:QUERY_MAX_CHARS]
 
 
 def _calls_with(calls: list[dict[str, Any]], tool: str) -> list[dict[str, Any]]:
@@ -149,7 +143,7 @@ def _choose_tool(state: ChatState) -> dict[str, Any] | None:
     if not _calls_with(calls, "search_blocks"):
         return {
             "tool": "search_blocks",
-            "args": {"q": _search_query(request), "limit": 8},
+            "args": {"q": _search_query(request), "limit": SEARCH_LIMIT},
         }
     return None
 
@@ -191,13 +185,13 @@ async def execute_tool_node(state: ChatState) -> dict[str, Any]:
             if tool == "search_blocks":
                 response = await client.get(
                     f"{base_url}/internal/docs/{document_id}/blocks/search",
-                    params={"q": args["q"], "limit": args.get("limit", 8)},
+                    params={"q": args["q"], "limit": args.get("limit", SEARCH_LIMIT)},
                 )
                 response.raise_for_status()
                 data = response.json()
                 if not isinstance(data, list):
                     raise ValueError("search_blocks 返回值不是 Block 数组")
-                for item in data[:8]:
+                for item in data[:SEARCH_LIMIT]:
                     block = Block.model_validate(item)
                     blocks[block.id] = block
             elif tool == "get_findings":
@@ -235,9 +229,9 @@ def _excerpt(block: Block, query: str) -> str:
         for sentence in re.split(r"(?<=[。；;！？\n])", text):
             trimmed = sentence.strip()
             if trimmed and query in trimmed:
-                return trimmed[:300]
+                return trimmed[:EXCERPT_CHARS]
     stripped = text.strip()
-    return stripped[:300]
+    return stripped[:EXCERPT_CHARS]
 
 
 def _validate_citations(
@@ -290,7 +284,7 @@ def _mock_answer(state: ChatState) -> tuple[str, list[Citation]]:
         ]
         citations: list[Citation] = []
         level_names = {RiskLevel.HIGH: "高危", RiskLevel.MEDIUM: "中危", RiskLevel.LOW: "低危"}
-        for index, (finding, block) in enumerate(verified[:3], start=1):
+        for index, (finding, block) in enumerate(verified[:MAX_CITATION_BLOCKS], start=1):
             reason = finding.reason or finding.ruleId or "需关注该条款"
             lines.append(
                 f"{index}. 【{level_names[finding.level]}】{reason} 原文：“{finding.quote}”（{block.id}，第 {block.page} 页）。"
@@ -308,7 +302,7 @@ def _mock_answer(state: ChatState) -> tuple[str, list[Citation]]:
     heading = "相关原文如下：" if "原文" in request.message else f"关于“{query}”，检索到以下原文依据："
     lines = [heading]
     citations = []
-    for index, block in enumerate(list(blocks.values())[:3], start=1):
+    for index, block in enumerate(list(blocks.values())[:MAX_CITATION_BLOCKS], start=1):
         excerpt = _excerpt(block, query)
         if not excerpt:
             continue
@@ -322,7 +316,7 @@ def _mock_answer(state: ChatState) -> tuple[str, list[Citation]]:
 
 
 def _history_text(request: ChatRequest) -> str:
-    return "\n".join(f"{item.role}: {item.content}" for item in request.history[-8:])
+    return "\n".join(f"{item.role}: {item.content}" for item in request.history[-HISTORY_MESSAGES:])
 
 
 def _chat_prompt(state: ChatState) -> tuple[str, str]:
@@ -404,7 +398,7 @@ def get_chat_graph():
     return builder.compile()
 
 
-def _delta_chunks(answer: str, size: int = 12):
+def _delta_chunks(answer: str, size: int = STREAM_CHUNK_CHARS):
     for start in range(0, len(answer), size):
         yield answer[start:start + size]
 

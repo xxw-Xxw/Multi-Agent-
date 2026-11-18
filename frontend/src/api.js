@@ -1,5 +1,4 @@
 const BASE = '/api'
-const TOKEN_KEY = 'docreview.token'
 const USER_KEY = 'docreview.user'
 
 let unauthorizedHandler = null
@@ -9,10 +8,7 @@ export function onUnauthorized(handler) {
   unauthorizedHandler = handler
 }
 
-export function getToken() {
-  return localStorage.getItem(TOKEN_KEY) || ''
-}
-
+/** 仅缓存展示用的用户信息；token 由服务端 HttpOnly Cookie 持有，脚本无法读取。 */
 export function getCurrentUser() {
   try {
     return JSON.parse(localStorage.getItem(USER_KEY) || 'null')
@@ -21,19 +17,12 @@ export function getCurrentUser() {
   }
 }
 
-export function setAuth(token, user) {
-  localStorage.setItem(TOKEN_KEY, token)
+export function setAuth(user) {
   localStorage.setItem(USER_KEY, JSON.stringify(user))
 }
 
 export function clearAuth() {
-  localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(USER_KEY)
-}
-
-function authHeaders(extra = {}) {
-  const token = getToken()
-  return token ? { ...extra, Authorization: `Bearer ${token}` } : { ...extra }
 }
 
 async function ensureOk(response) {
@@ -55,7 +44,7 @@ async function ensureOk(response) {
 async function request(url, options = {}) {
   const response = await ensureOk(await fetch(BASE + url, {
     ...options,
-    headers: authHeaders(options.headers)
+    credentials: 'include'
   }))
   return response.json()
 }
@@ -74,6 +63,16 @@ export function register(username, password, displayName) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password, displayName })
   })
+}
+
+/** 服务端吊销 token 并清除 Cookie。 */
+export function logout() {
+  return request('/auth/logout', { method: 'POST' })
+}
+
+/** 可选文件类型由后端返回，前端不再维护第二份清单。 */
+export function getAllowedTypes() {
+  return request('/documents/allowed-types')
 }
 
 export function uploadDocument(file) {
@@ -114,10 +113,9 @@ export function updateFinding(id, humanStatus) {
   })
 }
 
-/** EventSource 不能带请求头，token 只能走 query 参数。 */
+/** EventSource 同源请求会自动携带 HttpOnly Cookie，无需在 URL 里传 token。 */
 export function subscribe(taskId, onEvent) {
-  const token = encodeURIComponent(getToken())
-  const source = new EventSource(`${BASE}/tasks/${taskId}/stream?token=${token}`)
+  const source = new EventSource(`${BASE}/tasks/${taskId}/stream`, { withCredentials: true })
   source.addEventListener('progress', (event) => {
     onEvent(JSON.parse(event.data))
   })
@@ -140,7 +138,8 @@ export function getMessages(sessionId) {
 export async function sendMessage(sessionId, message, onEvent) {
   const response = await ensureOk(await fetch(`${BASE}/sessions/${sessionId}/messages`, {
     method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message })
   }))
   if (!response.body) throw new Error('浏览器不支持流式响应')

@@ -44,6 +44,11 @@ public class ReviewOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(ReviewOrchestrator.class);
 
+    private static final int TRACE_TEXT_MAX = 8000;
+    private static final int TRACE_ERROR_MAX = 900;
+    private static final int TASK_ERROR_MAX = 1800;
+    private static final int PROGRESS_COMPLETE = 100;
+
     private final ReviewTaskRepository taskRepository;
     private final DocumentRepository documentRepository;
     private final FindingRepository findingRepository;
@@ -122,7 +127,7 @@ public class ReviewOrchestrator {
         } catch (Exception e) {
             log.error("审查任务失败 taskId={}", taskId, e);
             task.setStatus(TaskStatus.FAILED);
-            task.setErrorMessage(truncate(e.getMessage(), 1800));
+            task.setErrorMessage(truncate(e.getMessage(), TASK_ERROR_MAX));
             task.setUpdatedAt(LocalDateTime.now());
             task.setLatencyMs(System.currentTimeMillis() - start);
             taskRepository.save(task);
@@ -237,7 +242,7 @@ public class ReviewOrchestrator {
             task.setDocType(result.docType());
             task.setTokenUsed(tokens);
             task.setLatencyMs(System.currentTimeMillis() - start);
-            task.setProgress(100);
+            task.setProgress(PROGRESS_COMPLETE);
             task.setStageMessage("审查完成");
             task.setStatus(result.degraded() ? TaskStatus.PARTIAL : TaskStatus.DONE);
             task.setErrorMessage(null);
@@ -275,12 +280,12 @@ public class ReviewOrchestrator {
             run.setTaskId(taskId);
             run.setAgentName(data.path("agentName").asText("UnknownAgent"));
             run.setStatus(AgentStatus.valueOf(data.path("status").asText("SUCCESS")));
-            run.setInputText(truncate(input, 8000));
-            run.setOutputText(truncate(output, 8000));
+            run.setInputText(truncate(input, TRACE_TEXT_MAX));
+            run.setOutputText(truncate(output, TRACE_TEXT_MAX));
             run.setLatencyMs(data.path("latencyMs").asLong(0));
-            run.setErrorMessage(truncate(data.path("error").asText(null), 900));
-            run.setTokens(data.path("tokens").asLong(
-                    ((input == null ? 0 : input.length()) + (output == null ? 0 : output.length())) / 2L));
+            run.setErrorMessage(truncate(data.path("error").asText(null), TRACE_ERROR_MAX));
+            // 只使用模型服务返回的真实 usage，缺失时记为 0，避免估算口径与 Python 不一致
+            run.setTokens(data.path("tokens").asLong(0));
             run.setCreatedAt(LocalDateTime.now());
             runRepository.save(run);
         } catch (Exception e) {
