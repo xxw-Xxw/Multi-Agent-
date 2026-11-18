@@ -1,0 +1,42 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: doc-review
+  datasource:
+    url: ${APP_DB_URL:jdbc:postgresql://127.0.0.1:5432/docreview}
+    driver-class-name: org.postgresql.Driver
+    username: ${APP_DB_USERNAME:docreview}
+    password: ${APP_DB_PASSWORD:docreview}
+    hikari:
+      connection-timeout: 10000
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 60MB
+  jackson:
+    default-property-inclusion: non_null
+
+app:
+  storage:
+    dir: ./data/files
+  agent:
+    # Python LangGraph 推理服务；模型环境变量仅由该服务读取
+    base-url: ${APP_AGENT_BASE_URL:http://127.0.0.1:8000}
+    java-base-url: ${APP_JAVA_INTERNAL_BASE_URL:http://127.0.0.1:8080}
+    timeout-seconds: ${APP_AGENT_TIMEOUT_SECONDS:180}
+  review:
+    section-max-chars: 800
+  auth:
+    # HS256 密钥，至少 16 字节；生产环境用 APP_AUTH_SECRET 覆盖
+    secret: ${APP_AUTH_SECRET:docreview-demo-secret-please-change-in-production}
+    ttl-hours: ${APP_AUTH_TTL_HOURS:12}
+
+logging:
+  level:
+    com.docreview: INFO
